@@ -13,8 +13,6 @@ from torch_geometric.transforms import FaceToEdge
 from torch_geometric.data import Data
 import time
 from src.obj_parser import Mesh_obj
-#from obj_parser import Mesh_obj
-
 
 class Penetration_D(nn.Module):
 
@@ -28,12 +26,7 @@ class Penetration_D(nn.Module):
         
         super(Penetration_D, self).__init__()
 
-        # body_numverts=20813
-        # cloth_numverts=26718
-
         # 1.body_mesh 使用 transformer + conv 网络结构
-        # why transformer? 
-        # -- 碰撞超平面的动态变化特征(随时间变化)、全局性(决定布料正反之类的)和稀疏性(布料某个区域是否发生穿模取决于少部分顶点组成的面决定)
         self.device = device
         self.motion_weights = GMW_Net(final_features=motion_size)
         self.motion_size = motion_size
@@ -47,7 +40,6 @@ class Penetration_D(nn.Module):
             tmp = nn.ModuleList()
             for i in range(motion_size):
                 tmp.append(nn.Linear(linear_dim[idx],linear_dim[idx+1]))
-                # dropout?
             self.fusion.append(tmp)
             self.fus_bn.append(nn.BatchNorm1d(linear_dim[idx+1]))    
 
@@ -66,21 +58,18 @@ class Penetration_D(nn.Module):
 
         batchsize = vertex_pos.shape[0] 
         body_mesh = body_mesh.view(batchsize,-1,3).float()
-        motion_weights = self.get_motion_weights(body_mesh).float() #[batchsize,motion_size]
+        motion_weights = self.get_motion_weights(body_mesh).float() 
         w_sum = torch.sum(motion_weights,dim=1) #[2,1]
         x = vertex_pos.view(batchsize,3).float()
 
         for idx in range(self.fusion_depth):
             sums = 0
             for j in range(self.motion_size):
-                # print((motion_weights[:,j] / w_sum).shape) # [batchsize]
-                # print(self.fusion[idx][j](x).shape)        # [batchsize,*]
                 wx = self.fusion[idx][j](x) * (motion_weights[:,j] / w_sum).unsqueeze(-1)       
                 sums = sums + wx
             x = self.fus_bn[idx](sums)
             x = self.fus_ac(x)
-            # print(x.shape)
-        p = self.out_linear(x).view(batchsize,-1) # [bachsize,1]
+        p = self.out_linear(x).view(batchsize,-1)
         return p  
     
     def get_motion_weights(self,body_mesh):
@@ -126,8 +115,6 @@ class MultiHeadAttention_conv(nn.Module):
     def __init__(self,num_features=1024,input_size=9,channels=[1,3,1,3],num_heads=2,hidden_size=4,out_features=1024,dropout=0.2,device="cuda:0"):
         
         super(MultiHeadAttention_conv, self).__init__()
-
-        # numverts=20813
         self.blockNum = 2
         self.device = device
         self.num_features = num_features
@@ -144,30 +131,26 @@ class MultiHeadAttention_conv(nn.Module):
         self.convBlock1 = nn.Sequential(
             nn.Conv2d(in_channels=channels[0],out_channels=channels[1],kernel_size=(h_kernel[0],w_kernel),stride=(stride_list[0],1)),
             nn.BatchNorm2d(channels[1]),
-            # nn.MaxPool2d(kernel_size=(3,1),stride=(1,1),padding=(1,0))
         )
         
         self.convBlock2 = nn.Sequential(
             nn.Conv2d(in_channels= channels[2],out_channels=channels[3],kernel_size=(h_kernel[1],w_kernel),stride=(stride_list[1],1)),
             nn.BatchNorm2d(channels[3]),
-            # 添加池化层导致提取的特征向量相邻维度的值重复(图像领域池化有效,但网格任务考虑弃用池化层)
-            #nn.MaxPool2d(kernel_size=(3,1),stride=(1,1),padding=(1,0)) 
         )
         self.admaxpool = nn.AdaptiveAvgPool2d((num_features*input_size//3,3))
         self.relu = nn.PReLU()
-        
-        # transformer不直接以网格数据作为输入的原因: 顶点规模通常上w,直接用线性层参数规模量太大
+
         self.query = nn.Linear(input_size, hidden_size)
         self.key = nn.Linear(input_size, hidden_size)
         self.value = nn.Linear(input_size, hidden_size)
         self.dropout = nn.Dropout(dropout)
         
-        self.fc_out = nn.Linear(num_features*hidden_size, out_features) #压缩成向量,提取特征
+        self.fc_out = nn.Linear(num_features*hidden_size, out_features) 
         
     def split_heads(self, x, batch_size):
 
         x = x.view(batch_size, -1, self.num_heads, self.head_size)
-        return x.permute(0, 2, 1, 3) # x.shape:[batchsize,num_heads,num_features,head_size]
+        return x.permute(0, 2, 1, 3)
     
     def mesh_encoder(self,mesh):
         
@@ -175,7 +158,6 @@ class MultiHeadAttention_conv(nn.Module):
         batchsize = mesh.shape[0]
         x = self.convBlock1(mesh).view(batchsize,1,-1,3)
         x = self.convBlock2(x).view(batchsize,1,-1,3)
-        # 自适应池化到[3072,3],就可以接受任意大小的网格输入了
         x = self.admaxpool(x)
         x = self.relu(x.view(batchsize,self.num_features,-1)) #[3072,3]>>[1024,9]
         return x
@@ -196,18 +178,13 @@ class MultiHeadAttention_conv(nn.Module):
         scores = torch.matmul(query, key.permute(0, 1, 3, 2)) / self.head_size**0.5
         
         if mask is not None:
-            # mask==0的部位,对应在score的地方使用非零微小值填充,表示这部分权重很小,对输出没什么影响
             scores = scores.masked_fill(mask == 0, float("-1e20"))
         
-        # attention_weights:[batchsize,numheads,num_features,num_features]
         attention_weights = torch.softmax(scores, dim=-1)
-        # attention_weights:[batchsize,numheads,num_features,head_size]
-        attended_values = self.dropout(torch.matmul(attention_weights, value)) # dropout避免过拟合
-        
-        #contiguous()实现张量语义和内存顺序的一致性维护
-        # [batchsize,num_features,numheads,head_size]
+        attended_values = self.dropout(torch.matmul(attention_weights, value)) 
+
         attended_values = attended_values.permute(0, 2, 1, 3).contiguous().view(batch_size, -1, self.num_heads * self.head_size) #[batchsize,1024,4]
-        output = self.fc_out(attended_values.view(batch_size,-1))  # [batchsize,1024*4]>>[batchsize,1024]
+        output = self.fc_out(attended_values.view(batch_size,-1))  
         
         return output   
 
@@ -227,37 +204,30 @@ class GMW_Net(nn.Module):
         self.feed_forward.append(
             nn.Sequential(
             nn.Linear(head_out_features, head_out_features),
-            #nn.LayerNorm(head_out_features), 
-            nn.BatchNorm1d(head_out_features), # 网格任务的话还是用BN会更好些?
+            nn.BatchNorm1d(head_out_features), 
             nn.ELU(),
-            nn.Dropout(p=dropout)) # 添加dropout后输出预测概率值不同batch之间差异增大
+            nn.Dropout(p=dropout)) 
         )
         self.feed_forward.append(nn.Linear(head_out_features,final_features))
 
         
     def forward(self,mesh,mask=None):
 
-        x = self.multihead_attention(mesh)  #[batchsize,out_features]
+        x = self.multihead_attention(mesh)  
 
         feed_forward_output = self.feed_forward[0](x)
         x = x + feed_forward_output
-        x = self.feed_forward[1](x)  # [batchsize,final_features]
+        x = self.feed_forward[1](x)
 
         return x
 
 
 if __name__ == "__main__":
-    # ctrl + / 实现批量注释
-    device = "cuda:2"
-    #cloth = Mesh_obj("garment.obj")
 
-    # 穿模判别器网络测试
+    device = "cuda:2"
+
     net = Penetration_D()
     a = torch.randn(2,3)
     b = torch.randn(2,20813,3)
-    start = time.time()*1000
     c = net(a,b)
-    end = time.time()*1000
-    print("最近邻计算时间:%f ms"%(end-start))
     #print(c)
-    print(c.shape) #[batchsize,1]
