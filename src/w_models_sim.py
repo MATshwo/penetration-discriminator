@@ -13,9 +13,8 @@ from torch_geometric.transforms import FaceToEdge
 from torch_geometric.data import Data
 import time
 from src.obj_parser import Mesh_obj
-# from obj_parser import Mesh_obj  # 单独运行w_models_sim时使用本行，注释上一行
 
-# 此处为w_models_copy模型的简化版,感觉简化后的没有之前的效果好
+# 此处为w_models_copy模型的简化版
 
 class Penetration_D(nn.Module):
 
@@ -29,15 +28,11 @@ class Penetration_D(nn.Module):
         
         super(Penetration_D, self).__init__()
 
-        # body_numverts=20813
-        # cloth_numverts=26718
-
         # 1.body_mesh 使用  conv 网络结构
-
         self.device = device
         self.motion_weights = Motion_conv(out_features=motion_size)
         self.motion_size = motion_size
-        linear_dim.insert(0,cloth_features) # 布料网格的特征使用三维坐标
+        linear_dim.insert(0,cloth_features) 
 
         # 2.Fusion_net for mixing the motion_weights to discriminator
         self.fusion_depth = len(linear_dim)-2
@@ -72,13 +67,10 @@ class Penetration_D(nn.Module):
         for idx in range(self.fusion_depth):
             sums = 0
             for j in range(self.motion_size):
-                # print((motion_weights[:,j] / w_sum).shape) # [batchsize]
-                # print(self.fusion[idx][j](x).shape)        # [batchsize,*]
                 wx = self.fusion[idx][j](x) * (motion_weights[:,j] / w_sum).unsqueeze(-1)       
                 sums = sums + wx
             x = self.fus_bn[idx](sums)
             x = self.fus_ac(x)
-            # print(x.shape)
         p = self.out_linear(x).view(batchsize,-1) # [bachsize,1]
         return p  
     
@@ -109,7 +101,6 @@ class Motion_conv(nn.Module):
         
         super(Motion_conv, self).__init__()
 
-        # numverts=20813
         self.blockNum = 2
         self.device = device
         self.num_features = num_features
@@ -123,7 +114,6 @@ class Motion_conv(nn.Module):
         self.convBlock1 = nn.Sequential(
             nn.Conv2d(in_channels=channels[0],out_channels=channels[1],kernel_size=(h_kernel[0],w_kernel),stride=(stride_list[0],1)),
             nn.BatchNorm2d(channels[1]),
-            # nn.MaxPool2d(kernel_size=(3,1),stride=(1,1),padding=(1,0))
         )
         
         self.convBlock2 = nn.Sequential(
@@ -136,9 +126,8 @@ class Motion_conv(nn.Module):
         
         self.feed_forward = nn.Sequential(
             nn.Linear(in_features, out_features),
-            # nn.BatchNorm1d(in_features),
             nn.ELU(),
-            nn.Dropout(p=dropout) # 添加dropout后输出预测概率值不同batch之间差异增大
+            nn.Dropout(p=dropout)
         )
         
 
@@ -148,33 +137,18 @@ class Motion_conv(nn.Module):
         batchsize = mesh.shape[0]
         x = self.convBlock1(mesh).view(batchsize,1,-1,3)
         x = self.convBlock2(x).view(batchsize,1,-1,3)
-        # 自适应池化到[1024,1],就可以接受任意大小的网格输入了
         x = self.admaxpool(x).view(batchsize,-1) # 输出[batchsize,1024]
         return x
     
     def forward(self,mesh,mask=None):
         
-        # batch_size = mesh.size(0)
         x = self.mesh_encoder(mesh)
         output = self.feed_forward(x)
-        # print(output.shape)
         return output   
 
-
-
 if __name__ == "__main__":
-    # ctrl + / 实现批量注释
     device = "cuda:2"
-    #cloth = Mesh_obj("garment.obj")
-
-    # 穿模判别器网络测试
     net = Penetration_D()
-    # print(net)
     a = torch.randn(5,3)
     b = torch.randn(5,20813,3)
-    start = time.time()*1000
     c = net(a,b)
-    end = time.time()*1000
-    print("最近邻计算时间:%f ms"%(end-start))
-    print(c)
-    print(c.shape) #[batchsize,1]
